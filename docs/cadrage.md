@@ -1,8 +1,8 @@
-# Document de cadrage
+# Document de cadrage — WatchMyBusiness
 
 **Analyse automatique de la satisfaction client par agrégation hebdomadaire d'avis textuels**
 
-Projet de module cloud avancé avec apprentissage automatique — architecture AWS serverless
+Produit **WatchMyBusiness** — module cloud avancé avec apprentissage automatique, architecture AWS serverless
 Cas d'étude : *NordicHome*, e-commerce de mobilier et décoration (entreprise fictive)
 
 ---

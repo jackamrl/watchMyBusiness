@@ -1,31 +1,26 @@
-# AWS SAM
-.aws-sam/
-samconfig.local.toml
-packaged.yaml
-
-# Généré au déploiement à partir des sorties CloudFormation.
-frontend/config.js
-out/
-
-# data/incoming/ et data/avis_incoming.zip sont régénérables
-# (scripts/generer_fichiers_avis.py) mais versionnés : ce sont des livrables
-# du projet, prêts pour un dépôt S3 manuel depuis la console.
-
 # Python
 __pycache__/
 *.py[cod]
 .venv/
-venv/
 .pytest_cache/
+.ruff_cache/
+
+# Terraform : état distant (GCS), variables locales (identifiant de facturation)
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/terraform.tfvars
+*.tfplan
+deploiement.log
+
+# Secrets
+.env
+*.pem
 
 # OS / éditeurs
 .DS_Store
 Thumbs.db
 .idea/
+.qodo/
 *.swp
-
-# Secrets
-.env
-*.pem
 
 docs/

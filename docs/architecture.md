@@ -1,380 +1,476 @@
-# Architecture technique
+# WatchMyBusiness — architecture fonctionnelle et technique
 
-## 1. Vue d'ensemble
+| | |
+|---|---|
+| Version | 1.0 — octobre 2026 |
+| Plateforme | Google Cloud, projet `watch-my-business-512316`, région `europe-west1` |
+| Établissement pilote | L'As du Fallafel (restaurant, Paris) |
+| Code | `app/` (Python 3.12) · infrastructure `terraform/` |
+
+---
+
+## Partie 1 — Architecture fonctionnelle
+
+### 1.1 Besoin
+
+Un gérant reçoit des dizaines d'avis Google par semaine, dans plusieurs langues.
+Il n'a ni le temps de tous les lire, ni d'outil pour en dégager des tendances.
+
+WatchMyBusiness lui envoie chaque lundi **un rapport court** qui répond à trois
+questions : *comment s'est passée la semaine ?*, *qu'est-ce qui a posé
+problème ou bien fonctionné ?*, *que dois-je faire en priorité ?* Un tableau de
+bord permet de creuser jusqu'à l'avis individuel.
+
+### 1.2 Acteurs
+
+| Acteur | Rôle | Interaction |
+|---|---|---|
+| **Gérant** | destinataire du rapport | lit l'e-mail du lundi, consulte le tableau de bord |
+| **Analyste / exploitant** | fait vivre le service | ajoute des établissements, suit les alertes, fait évoluer la taxonomie |
+| **Clients de l'établissement** | auteurs des avis | publient sur Google Maps (source indirecte) |
+| **Apify** | fournisseur de collecte | extrait les avis publics de Google Maps à la demande |
+| **Gemini** | moteur d'analyse | classe chaque avis, rédige la synthèse hebdomadaire |
+
+### 1.3 Capacités
+
+```mermaid
+flowchart LR
+    subgraph Acquerir["Acquérir"]
+        C1["Collecter les nouveaux avis<br/>(quotidien)"]
+        C2["Conserver la réponse brute<br/>(immuable, rejouable)"]
+        C3["Structurer et dédoublonner"]
+    end
+    subgraph Comprendre["Comprendre"]
+        C4["Analyser chaque avis<br/>sentiment, thèmes, extraits"]
+        C5["Repérer les avis actionnables<br/>et les sujets émergents"]
+    end
+    subgraph Restituer["Restituer"]
+        C6["Calculer les indicateurs<br/>de la semaine"]
+        C7["Rédiger la synthèse<br/>et les recommandations"]
+        C8["Diffuser : e-mail,<br/>tableau de bord, Looker Studio"]
+    end
+    subgraph Piloter["Piloter"]
+        C9["Gérer le référentiel<br/>des établissements"]
+        C10["Superviser : échecs, budget"]
+    end
+    C1 --> C2 --> C3 --> C4 --> C5 --> C6 --> C7 --> C8
+    C9 -.-> C1
+    C10 -.-> C1
+```
+
+### 1.4 Cycle de vie d'un avis
+
+```mermaid
+stateDiagram-v2
+    [*] --> Publie: client publie sur Google Maps
+    Publie --> Collecte: collecte quotidienne (Apify)
+    Collecte --> Archive: dépôt brut Cloud Storage
+    Archive --> Structure: normalisation + MERGE
+    Structure --> NoteSeule: avis sans texte
+    Structure --> Analyse: avis avec texte (Gemini)
+    NoteSeule --> Agrege: compte dans la note moyenne
+    Analyse --> Agrege: compte dans les KPI et les thèmes
+    Agrege --> Synthetise: rapport du lundi
+    Analyse --> Reanalyse: nouvelle version de prompt
+    Reanalyse --> Agrege
+    Synthetise --> [*]
+```
+
+### 1.5 Calendrier
+
+| Quand (Europe/Paris) | Traitement | Résultat |
+|---|---|---|
+| Chaque jour, 06:00 | collecte des 100 avis les plus récents, puis analyse des nouveaux | avis disponibles dans le tableau de bord le jour même |
+| Chaque lundi, 08:00 | rapport de la semaine écoulée (lundi → dimanche) | synthèse en base, e-mail au gérant |
+| À la demande | rejeu depuis le dépôt brut, rapport d'une semaine passée | rattrapage sans nouvelle collecte |
+
+### 1.6 Règles de gestion
+
+| # | Règle |
+|---|---|
+| RG1 | Un avis est identifié par son `reviewId` Google : une collecte répétée ne crée jamais de doublon, elle met à jour. |
+| RG2 | Un avis sans texte compte dans le volume et la note moyenne, mais n'est pas analysé. |
+| RG3 | Le sentiment prend une valeur parmi **POSITIF, NEGATIF, NEUTRE, MIXTE**. MIXTE = un vrai point positif et un vrai point négatif. Le texte prime sur les étoiles. |
+| RG4 | Les thèmes sont choisis dans une **taxonomie fermée par métier** (8 pour la restauration), chacun avec sa polarité et un extrait cité mot pour mot. Un sujet hors liste remonte en « thème émergent ». |
+| RG5 | Un avis est **actionnable** s'il signale un problème concret que le gérant peut corriger. |
+| RG6 | La semaine est la semaine ISO, du lundi au dimanche, dans le fuseau Europe/Paris. |
+| RG7 | Les pourcentages de sentiment se calculent sur les avis analysés. Tendance : **positive** si positifs − négatifs > 15 points, **négative** si < −15, **mitigée** sinon. |
+| RG8 | Les chiffres du rapport viennent du calcul SQL et **font foi** : l'agent ne peut ni les recalculer, ni contredire la tendance. |
+| RG9 | Chaque analyse porte la version du prompt qui l'a produite. Changer de version déclenche une réanalyse complète sans effacer l'ancienne. |
+| RG10 | La réponse brute de la collecte est conservée telle quelle et n'est jamais modifiée. |
+
+Taxonomie restauration : qualité de la cuisine, régularité, attente, service et
+accueil, prix, hygiène, cadre et ambiance, vente à emporter.
+
+### 1.7 Contenu du rapport hebdomadaire
+
+| Bloc | Source |
+|---|---|
+| Volume, note moyenne, % positifs / négatifs / neutres / mitigés, tendance | SQL |
+| Évolution par rapport à la semaine précédente | SQL (outil de l'agent) |
+| Top 5 des thèmes négatifs et positifs, avec citations | SQL sur les analyses |
+| **En bref**, **Ce qui a posé problème**, **Ce qui a bien fonctionné**, **Évolution**, **Actions recommandées** (3 au plus) | rédigé par l'agent Gemini, 250 mots maximum |
+
+### 1.8 Restitution
+
+| Canal | Public | Contenu |
+|---|---|---|
+| E-mail du lundi | gérant | KPI + synthèse + thèmes négatifs (si SMTP configuré) |
+| Tableau de bord web | public (démonstration) | semaine, KPI, synthèse, graphiques, thèmes avec citations, avis filtrables |
+| Looker Studio | analyste | exploration libre sur les vues BigQuery |
+
+---
+
+## Partie 2 — Architecture technique
+
+### 2.1 Vue d'ensemble
 
 ```mermaid
 flowchart TB
-    subgraph Sources["Sources d'avis"]
-        CRM["Export CRM / formulaire web<br/>marketplace"]
+    subgraph Externe["Externe"]
+        GM["Google Maps"]
+        AP["Apify<br/>compass~google-maps-reviews-scraper"]
+        GM --- AP
     end
 
-    subgraph Ingestion["Chaîne temps réel — à chaque avis"]
-        S3A[("S3<br/>bucket avis<br/>préfixe incoming/")]
-        L1["Lambda<br/>traiter-avis"]
-        CMP{{"Amazon Comprehend<br/>detect_sentiment<br/>detect_key_phrases"}}
-        DDB1[("DynamoDB<br/>table Avis")]
-        DLQ[["SQS<br/>lettres mortes"]]
+    subgraph Orchestration["Orchestration"]
+        SQ["Cloud Scheduler<br/>wmb-quotidien · 06:00"]
+        SR["Cloud Scheduler<br/>wmb-rapport-hebdo · lundi 08:00"]
+        WF["Workflows<br/>wmb-quotidien"]
     end
 
-    subgraph Agregation["Chaîne périodique — chaque lundi 08h00"]
-        EVB(["EventBridge Scheduler<br/>cron(0 8 ? * MON *)"])
-        L2["Lambda<br/>generer-rapport-hebdo"]
-        DDB2[("DynamoDB<br/>table Rapports")]
-        SES["Amazon SES<br/>e-mail de synthèse"]
+    subgraph Traitement["Cloud Run Jobs (image unique)"]
+        JC["wmb-collecte"]
+        JA["wmb-analyse"]
+        JR["wmb-rapport"]
+    end
+
+    subgraph Donnees["Données"]
+        GCS[("Cloud Storage<br/>avis-brut")]
+        BQ[("BigQuery<br/>watchmybusiness")]
+        SM["Secret Manager<br/>apify-token · smtp"]
+    end
+
+    subgraph IA["Agent Platform"]
+        GEM["Gemini 3.5 Flash<br/>europe-west3"]
     end
 
     subgraph Restitution["Restitution"]
-        COG["Cognito<br/>User Pool"]
-        APIG["API Gateway<br/>HTTP API + autoriseur JWT"]
-        L3["Lambda<br/>api-rapports"]
-        S3W[("S3<br/>hébergement statique<br/>dashboard")]
-        MGR(["Manager"])
+        WEB["Cloud Run Service<br/>wmb-web"]
+        LS["Looker Studio"]
+        MAIL["SMTP"]
     end
 
-    CW["CloudWatch<br/>logs, métriques, alarmes"]
-    SNS["SNS<br/>alertes"]
+    subgraph Supervision["Supervision"]
+        MON["Cloud Monitoring<br/>alerte job en échec"]
+        BUD["Budget 5 €"]
+    end
 
-    CRM -->|dépôt .txt| S3A
-    S3A -->|ObjectCreated| L1
-    L1 <-->|texte / sentiment + phrases clés| CMP
-    L1 -->|put_item| DDB1
-    L1 -.->|échec après réessais| DLQ
-
-    EVB -->|invoke| L2
-    DDB1 -->|Query index avis-par-mois<br/>7 derniers jours| L2
-    L2 -->|put_item| DDB2
-    L2 -->|send_email| SES
-    SES --> MGR
-
-    MGR -->|1. authentification| COG
-    COG -->|ID token JWT| MGR
-    MGR -->|2. GET + Bearer token| APIG
-    APIG -->|jeton validé| L3
-    L3 -->|Query| DDB2
-    L3 -->|Query| DDB1
-    S3W -->|HTML / CSS / JS| MGR
-
-    L1 & L2 & L3 -.-> CW
-    CW -->|alarme sur erreurs| SNS
-    SNS --> MGR
+    SQ --> WF --> JC --> JA
+    SR --> JR
+    JC -->|jeton| SM
+    JC -->|run + items| AP
+    JC -->|1. dépôt brut| GCS
+    JC -->|2. MERGE avis_bruts| BQ
+    JA -->|avis à analyser| BQ
+    JA -->|1 appel par avis| GEM
+    JA -->|MERGE avis_analyses| BQ
+    JR -->|KPI + outils| BQ
+    JR -->|agent| GEM
+    JR -->|MERGE rapports_hebdo| BQ
+    JR --> MAIL
+    WEB -->|lecture seule| BQ
+    LS -->|vues| BQ
+    Traitement -.-> MON
 ```
 
-## 2. Les deux chaînes, et pourquoi elles sont séparées
-
-Le projet repose sur deux traitements de nature différente. Les confondre est
-l'erreur classique sur ce type de sujet.
-
-**Chaîne temps réel (par avis).** Un avis arrive, il est analysé, il est stocké.
-Le traitement est unitaire, déclenché par un événement, et son résultat n'a
-presque aucune valeur métier pris isolément : savoir que l'avis `AV014` est
-négatif n'aide personne à décider quoi que ce soit.
-
-**Chaîne périodique (par semaine).** Une fois par semaine, l'ensemble des avis
-de la période est relu pour produire une synthèse : proportions, tendance,
-thèmes récurrents. C'est ce livrable-là qui répond à la problématique.
-
-Les séparer apporte trois bénéfices concrets :
-
-| | Chaîne temps réel | Chaîne périodique |
-|---|---|---|
-| Déclencheur | événement S3 | horloge (EventBridge Scheduler) |
-| Fréquence | à chaque avis | 1 fois / semaine |
-| Coût dominant | appels Comprehend | lectures DynamoDB (négligeables) |
-| Rejouable ? | non (coûterait un nouvel appel Comprehend) | oui, gratuitement |
-
-Ce dernier point est décisif : **le lexique de thèmes peut évoluer sans jamais
-retraiter les avis**. On change une expression régulière, on relance la Lambda
-d'agrégation, et tout l'historique est réinterprété. Si la détection de thèmes
-avait été figée au moment de l'ingestion, chaque ajustement aurait imposé de
-repasser l'intégralité du corpus dans Comprehend.
-
-## 3. Détail des composants
-
-### 3.1 S3 — dépôt des avis
-
-Bucket `<pile>-avis-<compte>`, préfixe `incoming/`. Les métadonnées voyagent
-dans le nom du fichier :
-
-```
-AV001_2026-08-17_CLI-1042.txt
-└─┬──┘ └────┬───┘ └───┬────┘
-avis_id   date     client_id
-```
-
-Le contenu du fichier est du texte brut, uniquement le corps de l'avis.
-N'importe quel système amont peut donc alimenter le pipeline sans produire de
-JSON structuré : un export CSV converti, un formulaire web, un scraping.
-
-Une règle de cycle de vie purge `incoming/` après 90 jours. Le texte est déjà
-persisté dans DynamoDB après analyse ; conserver le fichier brut plus longtemps
-serait payer deux fois le même stockage.
-
-### 3.2 Lambda `traiter-avis`
-
-Déclenchée par `s3:ObjectCreated:*`, filtrée sur le préfixe `incoming/` et le
-suffixe `.txt` — le filtre est posé côté S3, pas dans le code : une Lambda non
-invoquée coûte zéro.
-
-Deux appels Comprehend par avis :
-
-- `detect_sentiment` → `POSITIVE`, `NEGATIVE`, `NEUTRAL` ou `MIXED`, avec les
-  quatre probabilités associées ;
-- `detect_key_phrases` → les groupes nominaux saillants de l'avis.
-
-Gestion des erreurs à deux vitesses :
-
-- **erreur définitive** (nom de fichier non conforme, fichier vide) : journalisée
-  et ignorée. Réessayer donnerait le même résultat, et faire échouer le lot
-  bloquerait les avis valides ;
-- **erreur transitoire** (throttling Comprehend, indisponibilité DynamoDB) :
-  propagée pour que Lambda réessaie, puis bascule vers la file SQS de lettres
-  mortes. Une alarme CloudWatch surveille cette file.
-
-### 3.3 DynamoDB — table `Avis`
-
-| Attribut | Type | Rôle |
-|---|---|---|
-| `avis_id` | S | clé de partition |
-| `date` | S | `AAAA-MM-JJ` |
-| `mois` | S | `AAAA-MM`, clé de partition de l'index |
-| `client_id` | S | |
-| `texte` | S | avis original |
-| `sentiment` | S | `POSITIVE` / `NEGATIVE` / `NEUTRAL` / `MIXED` |
-| `score_confiance` | N | probabilité de la classe retenue |
-| `scores_detail` | M | les quatre probabilités |
-| `mots_cles` | L | phrases clés nettoyées |
-| `fichier_source`, `date_traitement`, `langue` | S | traçabilité |
-
-**Index secondaire global `avis-par-mois`** : partition `mois`, tri `date`.
-
-Sans lui, l'agrégation hebdomadaire ferait un `Scan` — c'est-à-dire lire toute
-la table, tout l'historique, à chaque exécution. Le coût et la latence
-croîtraient indéfiniment alors que la fenêtre analysée reste de sept jours.
-
-Pourquoi partitionner par mois plutôt que d'utiliser une partition unique ?
-Une clé constante concentrerait toutes les écritures sur une seule partition
-physique, qui plafonne à 1 000 unités d'écriture par seconde. Le seau mensuel
-répartit la charge tout en gardant un `Query` sur plage de dates. Une fenêtre
-de sept jours traverse au plus deux mois, donc au plus deux requêtes — c'est
-le cas explicitement testé dans `tests/test_agregation.py`.
-
-Facturation **à la demande** : le flux d'avis est trop irrégulier pour un mode
-provisionné, et il n'y a aucune capacité à dimensionner à l'avance.
-
-### 3.4 EventBridge Scheduler
-
-`cron(0 8 ? * MON *)`, fuseau `Europe/Paris`, fenêtre d'exécution flexible
-désactivée.
-
-EventBridge **Scheduler** et non une règle EventBridge classique : le Scheduler
-gère nativement les fuseaux horaires, y compris le passage heure d'été / heure
-d'hiver. Une règle `cron` classique s'exprime obligatoirement en UTC — le
-rapport arriverait à 9h en été et 8h en hiver.
-
-La charge utile transmise (`{"jours": 7, "envoyer_email": true}`) est le même
-format que celui utilisé pour l'invocation manuelle en démonstration : un seul
-chemin de code, testé de la même façon en démo et en production.
-
-### 3.5 Lambda `generer-rapport-hebdo`
-
-Le cœur du projet. Trois étapes.
-
-**Étape 1 — collecte.** Fenêtre glissante de 7 jours s'arrêtant la veille.
-Lancée le lundi matin, elle couvre exactement le lundi au dimanche écoulés.
-
-**Étape 2 — statistiques.** Comptage par classe de sentiment, pourcentages,
-volume par jour, score de confiance moyen. La tendance est qualifiée de
-`positive`, `negative` ou `mitigee` selon que l'écart entre positifs et négatifs
-dépasse 15 points. Comparaison automatique avec le rapport de la semaine
-précédente, s'il existe.
-
-**Étape 3 — thèmes récurrents.** C'est l'étape qui distingue ce projet d'une
-simple analyse de sentiment.
-
-Comprehend extrait des phrases clés brutes : « le colis », « la porte cassée »,
-« une charnière arrachée ». Trois formulations d'un même problème métier. Un
-classement direct de ces phrases produirait une longue liste plate, illisible,
-et surtout **incomparable d'une semaine à l'autre** — puisque les formulations
-changent à chaque fois.
-
-Le traitement se fait donc en deux temps :
-
-1. **normalisation** (`nordichome.texte`) : minuscules, suppression des accents,
-   l'apostrophe devient une espace, retrait des déterminants de tête. « L'accueil »,
-   « les accueils », « un accueil » convergent vers `accueil` ;
-2. **projection sur un lexique métier** (`nordichome.themes`) : six thèmes
-   stables, chacun défini par une liste d'expressions régulières. Un avis peut
-   porter plusieurs thèmes.
-
-| Thème | Polarité attendue |
-|---|---|
-| Retards de livraison | négative |
-| Colis et produits endommagés | négative |
-| Service après-vente difficile à joindre | négative |
-| Réactivité du service client | positive |
-| Accueil en boutique | positive |
-| Qualité des produits | positive |
-
-**Point important.** La colonne « polarité attendue » ne sert qu'à l'affichage.
-Le classement d'un thème dans le palmarès positif ou négatif s'appuie
-exclusivement sur le sentiment réellement détecté par Comprehend pour l'avis
-qui le porte. Un avis négatif mentionnant la qualité produit fera remonter
-« Qualité des produits » côté négatif — et c'est précisément l'information utile.
-Un test dédié verrouille ce comportement.
-
-Les avis `NEUTRAL` et `MIXED` comptent dans le volume mais n'alimentent ni l'un
-ni l'autre palmarès : sans polarité tranchée, les y ranger fausserait la lecture.
-
-**Étape 4 — restitution.** Écriture dans DynamoDB puis envoi SES (HTML + texte).
-Si l'envoi échoue — cas fréquent en bac à sable SES avec une adresse non
-vérifiée — le rapport reste persisté et l'exécution n'est pas mise en échec.
-Le statut de l'envoi est enregistré à côté du rapport.
-
-### 3.6 DynamoDB — table `Rapports`
-
-Clé de partition `semaine_id` (`2026-W34`, norme ISO 8601).
-
-**Index secondaire `rapports-par-date`** : partition `type` (constante
-`RAPPORT_HEBDO`), tri `date_generation`. La clé primaire donne l'accès direct à
-une semaine précise ; l'index fournit la liste chronologique inversée que le
-tableau de bord affiche, là encore sans `Scan`.
-
-Ici la partition unique est assumée : on écrit un élément par semaine, soit 52
-par an. Aucun risque de partition chaude.
-
-### 3.7 API Gateway + Cognito
-
-**HTTP API** plutôt que REST API : environ 70 % moins cher, latence plus faible,
-et surtout **autoriseur JWT natif**. Aucune Lambda d'autorisation à écrire — la
-passerelle valide elle-même la signature du jeton Cognito, vérifie l'émetteur,
-l'audience et l'expiration. Une requête non authentifiée n'atteint jamais la
-Lambda, donc ne coûte rien.
-
-Le pool Cognito a `AllowAdminCreateUserOnly` activé : pas d'auto-inscription,
-les comptes sont créés par un administrateur. C'est la traduction technique de
-« accès manager uniquement ».
-
-Le front présente l'**ID token** et non l'access token : l'audience (`aud`) d'un
-jeton Cognito n'est portée que par l'ID token, or c'est sur elle que l'autoriseur
-s'appuie.
-
-| Route | Rôle |
-|---|---|
-| `GET /rapports?limite=12` | liste chronologique inversée |
-| `GET /rapports/{semaine_id}` | rapport détaillé |
-| `GET /avis?debut=&fin=&sentiment=` | avis unitaires, pour la vue de détail |
-
-### 3.8 S3 — hébergement du tableau de bord
-
-Bucket en `WebsiteConfiguration`, lecture publique. L'application est
-statique : HTML, CSS et JavaScript sans étape de compilation ni dépendance
-installée (Chart.js est chargé depuis un CDN).
-
-Le bucket est public, mais **les données ne le sont pas** : le dashboard ne
-contient aucune donnée, il les demande à l'API, qui exige un jeton valide. Ce
-qui est public, c'est le code de la page — comme n'importe quel site web.
-
-En production on placerait CloudFront avec Origin Access Control devant le
-bucket : HTTPS, certificat, cache, et bucket entièrement privé. Cela a été
-écarté ici pour rester dans le cadre du bac à sable, sans certificat ni domaine
-à gérer.
-
-### 3.9 CloudWatch
-
-Journaux des trois fonctions, rétention 14 jours (volontairement courte : les
-logs sont la première source de dépassement du free tier sur ce type de projet).
-
-Trois alarmes, chacune reliée à un sujet SNS notifiant le manager par e-mail :
-
-| Alarme | Déclencheur | Pourquoi |
-|---|---|---|
-| `erreurs-traiter-avis` | ≥ 1 erreur / 5 min | des avis ne sont pas analysés |
-| `echec-rapport-hebdo` | ≥ 1 erreur / 5 min | le livrable hebdomadaire est manqué ; la Lambda ne tournant qu'une fois par semaine, il n'y a pas de seconde chance |
-| `avis-non-traites` | ≥ 1 message en file de lettres mortes | des avis ont épuisé leurs réessais |
-
-`TreatMissingData: notBreaching` sur les trois : sans invocation, la métrique
-est simplement absente, ce n'est pas un incident.
-
-## 4. Choix transverses
-
-**Région unique `eu-west-1` (Irlande).** Amazon Comprehend **n'est pas disponible
-à Paris (eu-west-3)** — les régions européennes qui le servent sont Irlande,
-Londres et Francfort. Irlande est la plus complète et la moins chère des trois.
-Une région unique évite tout transfert inter-régions, facturé et inutile ici.
-
-**Runtime Python 3.12 sur architecture arm64 (Graviton).** Environ 20 % moins
-cher à performance équivalente. Aucune dépendance native ne contraint
-l'architecture, puisque les Lambdas n'ont aucune dépendance applicative.
-
-**Aucune dépendance tierce.** `boto3` est fourni par le runtime Lambda ; toute
-la logique repose sur la bibliothèque standard. Pas de couche de dépendances à
-construire, pas de vulnérabilité à suivre, démarrage à froid minimal.
-
-**Lambda Layer partagée.** `nordichome.texte`, `nordichome.themes`,
-`nordichome.fichiers` et `nordichome.agregation` sont montés dans `/opt/python`
-et partagés par les trois fonctions. La convention de nommage des fichiers est
-ainsi définie à un seul endroit : le générateur du jeu de test et la Lambda
-d'ingestion s'appuient sur le même module, ce qui rend impossible une divergence
-entre écriture et lecture.
-
-**Logique métier séparée des entrées-sorties.** `nordichome.agregation` ne
-connaît ni boto3 ni les variables d'environnement. Conséquence directe : toute
-la logique de calcul est testable hors ligne, et `scripts/simulation_locale.py`
-produit un rapport complet sans qu'aucune ressource AWS n'existe.
-
-**Dépendance circulaire CloudFormation contournée.** Le bucket d'avis référence
-la Lambda (notification), la politique IAM de la Lambda référence le bucket :
-`Bucket → Fonction → Rôle → Bucket`. CloudFormation refuse. Le nom du bucket est
-donc calculé (`!Sub "${AWS::StackName}-avis-${AWS::AccountId}"`) plutôt que
-référencé, ce qui rompt le cycle.
-
-## 5. Estimation de coût
-
-Hypothèse : 500 avis par mois, un rapport par semaine, une dizaine de
-consultations du tableau de bord par semaine.
-
-| Service | Volume mensuel | Free tier | Coût estimé |
+Principes :
+
+- **Serverless et à la demande** : aucune machine permanente. Les jobs vivent le
+  temps du traitement, le service web descend à zéro instance hors trafic.
+- **Une seule image Docker** pour les trois jobs et le service web : seul
+  l'argument change (`collecte`, `analyse`, `rapport`, `web`).
+- **Brut d'abord** : la réponse Apify est écrite dans Cloud Storage avant toute
+  transformation ; BigQuery en est la vue structurée.
+- **Écritures idempotentes** : tout passe par un MERGE sur une clé métier.
+  Rejouer un traitement ne crée jamais de doublon.
+- **Infrastructure entièrement déclarée** dans Terraform, état dans Cloud Storage.
+
+### 2.2 Composants
+
+| Composant | Service GCP | Rôle | Paramètres clés |
 |---|---|---|---|
-| Comprehend | 1 000 unités (2 appels × 500 avis) | 50 000 unités / mois pendant 12 mois | 0 € puis ~0,25 € |
-| Lambda | ~600 invocations | 1 M requêtes / mois, à vie | 0 € |
-| DynamoDB à la demande | ~1 500 écritures, ~3 000 lectures | 25 Go de stockage | < 0,01 € |
-| S3 | < 10 Mo | 5 Go pendant 12 mois | 0 € |
-| API Gateway HTTP | ~500 requêtes | 1 M / mois pendant 12 mois | 0 € |
-| Cognito | 1 utilisateur actif | 10 000 MAU | 0 € |
-| SES | 4 e-mails | 3 000 messages / mois | 0 € |
-| CloudWatch Logs | < 100 Mo | 5 Go | 0 € |
-| EventBridge Scheduler | 4 invocations | 14 M / mois | 0 € |
+| `wmb-quotidien` | Cloud Scheduler | déclenche le workflow | `0 6 * * *`, Europe/Paris |
+| `wmb-quotidien` | Workflows | enchaîne collecte puis analyse ; l'analyse ne démarre que si la collecte réussit | connecteur `run.v2 jobs.run` (attend la fin) |
+| `wmb-rapport-hebdo` | Cloud Scheduler | lance le job rapport | `0 8 * * 1` |
+| `wmb-collecte` | Cloud Run Job | Apify → GCS → BigQuery | 512 Mi, 30 min, 1 réessai |
+| `wmb-analyse` | Cloud Run Job | Gemini sur les avis non analysés | 1 Gi, 30 min, 8 appels parallèles, lots de 500 |
+| `wmb-rapport` | Cloud Run Job | KPI SQL + agent Gemini + e-mail | 512 Mi, 15 min |
+| `wmb-web` | Cloud Run Service | tableau de bord + API | 0–2 instances, 512 Mi, cache 5 min |
+| `<projet>-avis-brut` | Cloud Storage | dépôt brut immuable | versioning, Coldline à 30 j, Archive à 1 an |
+| `watchmybusiness` | BigQuery | entrepôt | tables partitionnées par date, clusterisées par établissement |
+| `gemini-3.5-flash` | Agent Platform (Vertex AI) | analyse et rédaction | `europe-west3`, accès par IAM (aucune clé d'API) |
+| `apify-token`, `smtp-mot-de-passe` | Secret Manager | secrets lus à l'exécution | jamais dans le code ni dans Terraform |
+| `pipeline` | Artifact Registry | images Docker | 10 dernières versions conservées |
 
-**Total : nul en pratique sur la période du projet**, et de l'ordre de quelques
-dizaines de centimes par mois une fois le free tier épuisé. Le poste dominant à
-grande échelle est Comprehend, facturé par unité de 100 caractères — d'où
-l'intérêt de ne jamais rejouer l'analyse unitaire, et de ne rejouer que
-l'agrégation.
+### 2.3 Flux quotidien
 
-## 6. Limites connues
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Cloud Scheduler
+    participant W as Workflows
+    participant C as Job collecte
+    participant A as Apify
+    participant G as Cloud Storage
+    participant B as BigQuery
+    participant N as Job analyse
+    participant M as Gemini
 
-**Le lexique est écrit à la main.** Six thèmes couvrent le domaine de
-NordicHome ; les transposer à un autre métier demande de les réécrire. C'est un
-choix délibéré : sur 28 avis, un apprentissage non supervisé (LDA, clustering
-d'embeddings) produirait des groupes instables et impossibles à nommer. Le
-lexique donne des thèmes stables, comparables dans le temps, et explicables — ce
-qui est exactement ce qu'attend un manager. La piste d'évolution est
-`Comprehend Topic Modeling` au-delà de quelques milliers d'avis.
+    S->>W: 06:00 · exécuter wmb-quotidien
+    W->>C: jobs.run (attend la fin)
+    C->>B: établissements actifs
+    C->>A: lancer le run (URL du lieu, 100 avis récents)
+    loop toutes les 5 s, 15 min max
+        C->>A: statut du run
+    end
+    A-->>C: items JSON
+    C->>G: run-<id>.json (if_generation_match=0)
+    C->>B: load → table de transit → MERGE avis_bruts
+    W->>N: jobs.run
+    N->>B: avis avec texte sans analyse pour VERSION_PROMPT
+    N->>M: 1er avis seul (échec rapide si config invalide)
+    par 8 appels en parallèle
+        N->>M: avis + consigne + schéma JSON, température 0
+        M-->>N: sentiment, score, thèmes, extraits, résumé
+    end
+    N->>B: MERGE avis_analyses (review_id, version_prompt)
+```
 
-**Le lexique ne comprend pas la négation.** L'avis neutre `AV019` (« livrée dans
-les délais annoncés ») déclenche le motif `délai` du thème « Retards de
-livraison ». Cela reste sans conséquence ici, car le classement est filtré par
-le sentiment : un avis neutre n'alimente aucun palmarès. Mais un avis franchement
-négatif contenant « pas de retard » serait mal classé. C'est la limite principale
-de l'approche par motifs.
+### 2.4 Flux hebdomadaire et agent
 
-**SES reste en bac à sable.** Seules des adresses vérifiées peuvent recevoir les
-rapports. Suffisant pour la démonstration ; une sortie de bac à sable (demande
-au support AWS) serait requise pour un usage réel.
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Cloud Scheduler
+    participant R as Job rapport
+    participant B as BigQuery
+    participant M as Agent Gemini
+    participant E as SMTP
 
-**Le bucket du dashboard est public en HTTP.** Acceptable pour une page sans
-données ; CloudFront + OAC serait la réponse en production.
+    S->>R: lundi 08:00
+    R->>B: KPI de la semaine (SQL)
+    R->>B: thèmes de la semaine (SQL)
+    R->>M: consigne + KPI imposés + tendance imposée + 5 outils
+    loop appels d'outils automatiques (15 max)
+        M->>R: comparer_semaine_precedente()
+        R->>B: KPI et thèmes S et S-1
+        M->>R: citations(theme, polarite)
+        M->>R: avis_actionnables() / themes_emergents()
+    end
+    M-->>R: synthèse Markdown
+    R->>B: MERGE rapports_hebdo (etablissement_id, semaine_id)
+    R->>E: e-mail au gérant (si configuré)
+```
 
-**Une seule langue.** `LanguageCode='fr'` est figé. Comprehend propose
-`detect_dominant_language` : un appel supplémentaire permettrait de router
-automatiquement, au prix d'une unité facturée de plus par avis.
+Gemini intervient de deux façons, volontairement différentes :
+
+| | Analyse d'un avis | Rapport hebdomadaire |
+|---|---|---|
+| Mode | appel unique, **sortie structurée** | **agent** avec appels d'outils |
+| Contrainte | schéma JSON, thèmes en énumération, température 0 | KPI et tendance imposés dans la consigne, température 0.2 |
+| Contrôle | revalidation côté code (`gemini.valider`) | chiffres issus du SQL uniquement, citations issues de l'outil |
+| Pourquoi | résultat reproductible et stockable | le modèle choisit quoi creuser, le SQL garantit les chiffres |
+
+### 2.5 Modèle de données
+
+```mermaid
+erDiagram
+    ETABLISSEMENTS ||--o{ AVIS_BRUTS : "reçoit"
+    AVIS_BRUTS ||--o{ AVIS_ANALYSES : "une par version de prompt"
+    ETABLISSEMENTS ||--o{ RAPPORTS_HEBDO : "une par semaine"
+
+    ETABLISSEMENTS {
+        string etablissement_id PK
+        string nom
+        string url_maps
+        string metier
+        string email_manager
+        int max_avis
+        string langue
+        bool actif
+    }
+    AVIS_BRUTS {
+        string review_id PK
+        string etablissement_id FK
+        date date_avis "partition"
+        timestamp publie_le
+        int note
+        string texte "null si note seule"
+        string langue
+        string url_avis
+        string reponse_proprietaire
+        json brut "item Apify complet"
+        timestamp collecte_le
+    }
+    AVIS_ANALYSES {
+        string review_id PK
+        string version_prompt PK
+        string etablissement_id FK
+        date date_avis "partition"
+        string sentiment
+        float score "-1 a +1"
+        record themes "theme, polarite, extrait"
+        string theme_emergent
+        bool actionnable
+        string resume
+        string modele
+        timestamp analyse_le
+    }
+    RAPPORTS_HEBDO {
+        string etablissement_id PK
+        string semaine_id PK "2026-W42"
+        date periode_debut "partition"
+        date periode_fin
+        int nb_avis
+        float note_moyenne
+        float pct_positif
+        float pct_negatif
+        string tendance
+        string top_negatifs "JSON"
+        string top_positifs "JSON"
+        string synthese "Markdown"
+        string modele
+        string statut_email
+    }
+```
+
+Vues pour la restitution (dernière analyse par avis, toutes versions confondues) :
+`v_avis` (un avis par ligne), `v_themes` (une ligne par thème cité),
+`v_kpi_semaine` (indicateurs par établissement et par semaine).
+
+Le référentiel `etablissements` est alimenté par Terraform (`var.etablissements`)
+via un MERGE : un établissement retiré de la configuration passe à `actif = false`
+sans perdre son historique.
+
+Dépôt brut : `gs://<projet>-avis-brut/<etablissement>/<AAAA-MM-JJ>/run-<run_id>.json`,
+un fichier par collecte, avec en métadonnées l'établissement, le run Apify, le
+nombre d'items et l'horodatage.
+
+### 2.6 API du tableau de bord
+
+Servie par `wmb-web` sur la même origine que la page (pas de CORS).
+
+| Route | Réponse |
+|---|---|
+| `GET /api/etablissements` | établissements actifs |
+| `GET /api/rapports?etablissement=&limite=12` | liste des rapports, du plus récent au plus ancien |
+| `GET /api/rapports/{semaine_id}?etablissement=` | rapport complet + comparaison S-1, volume par jour, citations par thème |
+| `GET /api/avis?etablissement=&debut=&fin=&sentiment=` | avis de la période (200 max, 62 jours max) avec leur dernière analyse |
+| `GET /api/sante` | sonde de démarrage |
+
+Requêtes paramétrées uniquement ; sentiment contrôlé par liste blanche. Côté
+page, tout texte venant de la base ou du modèle est échappé avant affichage.
+
+### 2.7 Sécurité
+
+Trois identités, chacune avec le strict nécessaire :
+
+| Compte de service | Utilisé par | Droits |
+|---|---|---|
+| `wmb-pipeline` | jobs collecte, analyse, rapport | `bigquery.jobUser`, `bigquery.dataEditor` (dataset), `aiplatform.user`, `secretAccessor` (2 secrets), `storage.objectCreator` + `objectViewer` (bucket brut), `logging.logWriter` |
+| `wmb-orchestrateur` | Scheduler, Workflows | `run.invoker` (3 jobs), `run.viewer`, `workflows.invoker`, `logging.logWriter` — **aucun accès aux données** |
+| `wmb-web` | tableau de bord | `bigquery.dataViewer` (dataset), `bigquery.jobUser`, `logging.logWriter` — **lecture seule** |
+
+- **Aucune clé** : ni clé de compte de service, ni clé d'API Gemini. Tout passe par IAM.
+- **Secrets** : uniquement dans Secret Manager, lus à l'exécution ; le jeton Apify
+  n'apparaît ni dans le code, ni dans l'état Terraform, ni dans les journaux.
+- **Dépôt brut** : accès public interdit (`public_access_prevention`), le pipeline
+  ne peut ni écraser (`if_generation_match=0`) ni supprimer.
+- **Données personnelles** : collecte avec `personalData: false` (pas de nom ni
+  de photo d'auteur). Les avis sont publics sur Google Maps.
+- **Tableau de bord public** : choix assumé pour la démonstration. Pour un usage
+  réel : retirer `allUsers` et placer le service derrière IAP (comptes Google).
+- **Conteneur** : image `python:3.12-slim`, utilisateur non root.
+
+### 2.8 Fiabilité et reprise
+
+| Situation | Comportement |
+|---|---|
+| Collecte Apify à 0 avis (URL sans identifiant de lieu) | URL vérifiée avant l'appel ; run vide = erreur explicite, job en échec, alerte |
+| Échec après le dépôt brut | données intactes dans GCS : `rejouer --prefixe …` recharge BigQuery sans repayer Apify |
+| Job relancé, collecte en double | MERGE sur `review_id` : aucun doublon |
+| Quota Gemini (429) ou erreur 5xx | 4 essais, attente exponentielle (2, 4, 8 s) |
+| Modèle introuvable, droits manquants (4xx) | arrêt immédiat après le premier avis, sans réessai |
+| Plus de 10 % d'analyses en échec | job en échec → alerte ; les analyses réussies sont conservées, les autres seront reprises au prochain passage |
+| Collecte en échec | Workflows ne lance pas l'analyse |
+| Rapport à refaire | `rapport --date-fin AAAA-MM-JJ` réécrit la semaine (MERGE) |
+
+### 2.9 Observabilité et coûts
+
+- **Journaux** : JSON structuré avec sévérité, lisibles dans Cloud Logging ; les
+  appels d'outils de l'agent sont journalisés avec leurs arguments.
+- **Alerte** : toute exécution de job en échec déclenche un e-mail.
+- **Traçabilité** : chaque analyse et chaque rapport stockent le modèle et la
+  version de prompt utilisés.
+- **Budget** : 5 € par mois, alertes à 50 % et 100 %.
+
+Coût mesuré au démarrage (100 avis collectés, 68 analysés, un rapport) : quelques
+centimes, essentiellement Apify et Gemini (~80 k jetons en entrée, ~77 k en
+sortie, raisonnement inclus). BigQuery, Cloud Storage, Cloud Run, Scheduler et
+Workflows restent dans les quotas gratuits ; le cache de 5 minutes du tableau de
+bord limite les requêtes BigQuery facturées.
+
+### 2.10 Déploiement
+
+```mermaid
+flowchart LR
+    D["deployer.ps1"] --> A["API socle<br/>gcloud"]
+    A --> T0["bucket d'état<br/>Terraform"]
+    T0 --> T1["terraform apply ciblé<br/>API + Artifact Registry"]
+    T1 --> CB["Cloud Build<br/>image app/:tag horodaté"]
+    CB --> T2["terraform apply complet<br/>jobs, service, BigQuery, IAM…"]
+    T2 --> SEC["jeton Apify<br/>Secret Manager (si absent)"]
+```
+
+| Fichier Terraform | Contenu |
+|---|---|
+| `versions.tf`, `variables.tf` | fournisseur Google, backend GCS, paramètres validés |
+| `apis.tf` | activation des API |
+| `stockage.tf` | bucket brut, cycle de vie, droits du pipeline |
+| `bigquery.tf` | dataset, tables, vues, référentiel des établissements |
+| `iam.tf`, `secrets.tf` | comptes de service, rôles, secrets |
+| `jobs.tf` | Artifact Registry, trois Cloud Run Jobs |
+| `web.tf` | service `wmb-web`, compte en lecture seule, accès public |
+| `orchestration.tf` | Workflows et Cloud Scheduler |
+| `supervision.tf` | canal e-mail, alerte, budget |
+
+Chaque déploiement produit une image au tag horodaté : revenir en arrière =
+`terraform apply -var image_tag=<tag précédent>`.
+
+### 2.11 Choix d'architecture
+
+| Décision | Alternative écartée | Raison |
+|---|---|---|
+| Dépôt brut GCS avant BigQuery | ingestion directe dans BigQuery | rejouer sans repayer Apify ; corriger une normalisation boguée |
+| Cloud Run Jobs | Cloud Functions | traitements longs (jusqu'à 30 min), une image commune, même code en local |
+| Workflows entre collecte et analyse | deux Schedulers décalés | dépendance explicite : pas d'analyse si la collecte échoue |
+| MERGE via table de transit | insertion en streaming | idempotent ; les load jobs sont gratuits |
+| Sortie JSON imposée pour l'analyse | texte libre | stockable, comparable d'une semaine à l'autre |
+| KPI en SQL, interprétation par l'agent | chiffres calculés par le modèle | aucun chiffre inventé |
+| Taxonomie fermée + thème émergent | thèmes libres | comparabilité, sans perdre les signaux nouveaux |
+| `version_prompt` stockée | écrasement des analyses | réanalyse et comparaison entre versions |
+| Gemini via IAM | clé d'API | aucun secret à faire tourner |
+| Une page + API sur Cloud Run | hébergement statique + API séparée | même origine, un seul déploiement |
+| Terraform | console / gcloud | reproductible, revu, détruit proprement |
+
+### 2.12 Limites et évolutions
+
+| Limite actuelle | Évolution possible |
+|---|---|
+| 100 avis les plus récents par collecte | collecte rétroactive ponctuelle de l'historique |
+| Tableau de bord public | IAP ou authentification Google |
+| Pas d'e-mail tant que SMTP n'est pas configuré | SMTP ou service d'envoi transactionnel |
+| Raisonnement de Gemini coûteux en jetons de sortie | niveau de réflexion bas ou modèle Flash Lite pour l'analyse, après comparaison sur un échantillon |
+| Un seul métier en production (restaurant) | taxonomies supplémentaires dans `taxonomie.py` (le mobilier existe déjà) |
+| Pas de pipeline CI | GitHub Actions : ruff, pytest, `terraform validate`, déploiement sur tag |

@@ -1,10 +1,4 @@
-# Outillage de développement uniquement.
-#
-# Les Lambdas n'ont AUCUNE dépendance applicative : boto3 est fourni par le
-# runtime AWS Lambda, et toute la logique métier repose sur la bibliothèque
-# standard. C'est un choix assumé — pas de couche de dépendances à construire,
-# pas de vulnérabilité tierce à suivre, démarrage à froid minimal.
-
+-r app/requirements.txt
+httpx==0.28.1
 pytest==8.3.4
-boto3==1.35.92   # utilisé par scripts/simulation_locale.py --comprehend
-ruff==0.8.6      # linting, optionnel
+ruff==0.8.6

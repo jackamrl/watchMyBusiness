@@ -1,0 +1,19 @@
+projet             = "mon-projet-gcp"
+region             = "europe-west1"
+compte_facturation = "XXXXXX-XXXXXX-XXXXXX"
+budget_mensuel     = 5
+email_alertes      = "moi@exemple.fr"
+
+etablissements = [
+  {
+    etablissement_id = "as-du-fallafel"
+    nom              = "L'As du Fallafel"
+    # Suivre la redirection du lien maps.app.goo.gl : l'URL doit contenir !1s0x…:0x…
+    url_maps      = "https://www.google.com/maps/place/L'As+du+Fallafel/@48.8574067,2.3566213,17z/data=!4m6!3m5!1s0x47e66e025d19942f:0x710304a633dfc4c2!8m2!3d48.8574067!4d2.3591962!16s%2Fm%2F0glq67h"
+    metier        = "restaurant"
+    email_manager = "gerant@exemple.fr"
+    max_avis      = 100
+    langue        = "fr"
+    actif         = true
+  },
+]
