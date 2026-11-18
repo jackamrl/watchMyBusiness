@@ -128,6 +128,14 @@ def main() -> int:
                    help="charger dans avis_bruts / avis_analyses (sans coût Gemini)")
     c.add_argument("--appliquer", action="store_true", help="sans ce drapeau : simulation")
 
+    c = sous.add_parser("publier-cloud",
+                        help="rapports hebdo + sync humeur depuis analyses_maison (BigQuery)")
+    c.add_argument("--semaines", type=int, default=52)
+    c.add_argument("--version", default="fallafel-v3+fallafel-v4")
+    c.add_argument("--dry-run", action="store_true")
+    c.add_argument("--sans-sync", action="store_true",
+                   help="ne pas tenter de copier humeur/confiance vers avis_analyses")
+
     c = sous.add_parser("echantillon", help="sous-ensemble aléatoire d'un JSON Lines")
     c.add_argument("entree")
     c.add_argument("sortie")
@@ -263,6 +271,10 @@ def main() -> int:
         from .vers_bigquery import construire, vers_pipeline
         print(vers_pipeline(a.avis, a.paquet, a.appliquer) if a.pipeline
               else construire(a.avis, a.paquet, a.sortie))
+    elif a.commande == "publier-cloud":
+        from .publier_cloud import executer
+        print(json.dumps(executer(a.semaines, a.version, a.dry_run, a.sans_sync),
+                         ensure_ascii=False, indent=1))
     elif a.commande == "echantillon":
         from .donnees import echantillon
         print(f"{echantillon(a.entree, a.sortie, a.n, a.etoiles)} avis → {a.sortie}")

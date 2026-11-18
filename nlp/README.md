@@ -75,11 +75,25 @@ python -m nlp predire modeles/nlp-v1-S "Une heure d'attente mais le falafel est 
 
 Le tableau est écrit dans `data/resultats.md`.
 
-### 6. Production
+### 6. Production (cloud)
+
+Si les analyses sont déjà dans BigQuery (`analyses_maison`, `avis_historique`) :
 
 ```powershell
-gcloud storage cp modeles/nlp-v1-S/* gs://watch-my-business-512316-modeles/nlp-v1/
-# terraform.tfvars : moteur_analyse = "maison"  (et gemini_par_cle = true pour sortir de Vertex)
-"cle_gemini" | gcloud secrets versions add gemini-api-key --data-file=-
+# 1) Rapports hebdomadaires pour le tableau de bord (sans rappeler le modèle)
+python -m nlp publier-cloud --semaines 52
+
+# 2) Déployer le service web branché sur BigQuery
+# terraform.tfvars : moteur_analyse = "maison", version_modele = "fallafel-v3+fallafel-v4"
+.\deployer.ps1
+terraform -chdir=terraform output tableau_de_bord
+```
+
+Pour activer aussi le job d'analyse quotidien avec le modèle maison :
+
+```powershell
+gcloud storage cp modeles/fallafel/nlp-S-duo/* gs://watch-my-business-512316-modeles/fallafel-v3+fallafel-v4/
+# terraform.tfvars : moteur_analyse = "maison"
+"cle_gemini" | gcloud secrets versions add gemini-api-key --data-file=-   # relais optionnel
 .\deployer.ps1
 ```

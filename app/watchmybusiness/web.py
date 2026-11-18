@@ -33,6 +33,8 @@ STATIQUE = Path(__file__).parent / "static"
 DUREE_CACHE_S = 300
 SENTIMENTS = {"POSITIF", "NEGATIF", "NEUTRE", "MIXTE"}
 SEUIL = float(os.environ.get("SEUIL_CONFIANCE", "0.92"))  # sous ce seuil : « à vérifier »
+# Version d'analyses à privilégier dans le tableau de bord (ex. fallafel-v3+fallafel-v4).
+VERSION_AFFICHEE = os.environ.get("VERSION_MODELE", "").strip()
 
 _cache: dict[str, tuple[float, Any]] = {}
 _verrou = threading.Lock()
@@ -66,17 +68,21 @@ def etablissements(cfg) -> list[dict]:
 
 
 def liste_rapports(cfg, etab: str, limite: int) -> list[dict]:
+    filtre_version = "AND version_prompt = @version" if VERSION_AFFICHEE else ""
+    parametres: dict[str, Any] = {"etab": etab, "limite": limite}
+    if VERSION_AFFICHEE:
+        parametres["version"] = VERSION_AFFICHEE
     lignes = entrepot.requete(
         cfg,
         f"""
         SELECT semaine_id, periode_debut, periode_fin, nb_avis, nb_analyses,
                note_moyenne, pct_positif, pct_negatif, pct_neutre, pct_mixte, tendance
         FROM {cfg.table('rapports_hebdo')}
-        WHERE etablissement_id = @etab
+        WHERE etablissement_id = @etab {filtre_version}
         ORDER BY periode_debut DESC
         LIMIT @limite
         """,
-        {"etab": etab, "limite": limite},
+        parametres,
     )
     return [serialisable(l) for l in lignes]
 
@@ -108,11 +114,14 @@ def detail_rapport(cfg, etab: str, semaine_id: str) -> dict | None:
         else None
     )
 
+    table_volume = (
+        cfg.table("avis_historique") if VERSION_AFFICHEE else cfg.table("avis_bruts")
+    )
     par_jour = {
-        l["date_avis"].isoformat(): l["nb"]
+        (l["date_avis"].isoformat() if hasattr(l["date_avis"], "isoformat") else str(l["date_avis"])): l["nb"]
         for l in entrepot.requete(
             cfg,
-            f"SELECT date_avis, COUNT(*) AS nb FROM {cfg.table('avis_bruts')} "
+            f"SELECT date_avis, COUNT(*) AS nb FROM {table_volume} "
             "WHERE etablissement_id = @etab AND date_avis BETWEEN @debut AND @fin GROUP BY 1",
             {"etab": etab, "debut": debut, "fin": fin},
         )
@@ -125,37 +134,49 @@ def detail_rapport(cfg, etab: str, semaine_id: str) -> dict | None:
         for i in range((fin - debut).days + 1)
     ]
 
+    version = r.get("version_prompt") or VERSION_AFFICHEE or "v1"
+    p = {"etab": etab, "version": version, "debut": debut, "fin": fin}
+    # Analyses NLP maison : table dédiée (humeur/confiance déjà présentes).
+    table_a = cfg.table("analyses_maison") if (
+        VERSION_AFFICHEE or str(r.get("modele", "")).startswith("maison-")
+    ) else cfg.table("avis_analyses")
+    filtre = "a.etablissement_id = @etab AND a.date_avis BETWEEN @debut AND @fin"
+    if "analyses_maison" not in table_a:
+        filtre += " AND a.version_prompt = @version"
+
     citations: dict[tuple[str, str], list[dict]] = {}
+    # Pas d'extraits stockés côté maison : on cite le début du texte de l'avis.
     for l in entrepot.requete(
         cfg,
         f"""
-        SELECT t.theme, t.polarite, t.extrait
-        FROM {cfg.table('avis_analyses')} a, UNNEST(a.themes) t
-        WHERE a.etablissement_id = @etab AND a.version_prompt = @version
-          AND a.date_avis BETWEEN @debut AND @fin AND t.extrait != ''
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY t.theme, t.polarite ORDER BY ABS(a.score) DESC) <= 2
+        SELECT t.theme, t.polarite, LEFT(h.texte, 160) AS extrait, a.score
+        FROM {table_a} a
+        JOIN {cfg.table('avis_historique' if 'analyses_maison' in table_a else 'avis_bruts')} h
+          USING (review_id)
+        , UNNEST(a.themes) t
+        WHERE {filtre} AND h.texte IS NOT NULL AND t.polarite != 'absent'
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY t.theme, t.polarite ORDER BY ABS(IFNULL(a.score, 0)) DESC
+        ) <= 2
         """,
-        {"etab": etab, "version": r.get("version_prompt") or "v1", "debut": debut, "fin": fin},
+        p,
     ):
         citations.setdefault((l["theme"], l["polarite"]), []).append({"extrait": l["extrait"]})
 
-    filtre = "a.etablissement_id = @etab AND a.version_prompt = @version " \
-             "AND a.date_avis BETWEEN @debut AND @fin"
-    p = {"etab": etab, "version": r.get("version_prompt") or "v1", "debut": debut, "fin": fin}
     r["humeurs"] = entrepot.requete(
-        cfg, f"SELECT humeur, COUNT(*) AS nb FROM {cfg.table('avis_analyses')} a "
+        cfg, f"SELECT humeur, COUNT(*) AS nb FROM {table_a} a "
              f"WHERE {filtre} AND humeur IS NOT NULL GROUP BY 1 ORDER BY nb DESC", p)
     matrice: dict[str, dict] = {}
     for l in entrepot.requete(
-        cfg, f"SELECT t.theme, t.polarite, COUNT(*) AS nb FROM {cfg.table('avis_analyses')} a, "
-             f"UNNEST(a.themes) t WHERE {filtre} GROUP BY 1, 2", p):
+        cfg, f"SELECT t.theme, t.polarite, COUNT(*) AS nb FROM {table_a} a, "
+             f"UNNEST(a.themes) t WHERE {filtre} AND t.polarite != 'absent' GROUP BY 1, 2", p):
         ligne = matrice.setdefault(l["theme"], {"theme": l["theme"], "positif": 0, "negatif": 0,
                                                 "neutre": 0,
                                                 "libelle": taxonomie.libelle(l["theme"])})
         ligne[l["polarite"]] = l["nb"]
     r["themes_matrice"] = list(matrice.values())
     r["nb_a_verifier"] = entrepot.requete(
-        cfg, f"SELECT COUNTIF(confiance < @seuil) AS nb FROM {cfg.table('avis_analyses')} a "
+        cfg, f"SELECT COUNTIF(IFNULL(confiance, 1) < @seuil) AS nb FROM {table_a} a "
              f"WHERE {filtre}", {**p, "seuil": SEUIL})[0]["nb"]
 
     for cle, polarite in (("top_negatifs", "negatif"), ("top_positifs", "positif")):
@@ -172,24 +193,47 @@ def liste_avis(cfg, etab: str, debut: date, fin: date, sentiment: str | None) ->
     parametres: dict[str, Any] = {"etab": etab, "debut": debut, "fin": fin}
     if sentiment:
         parametres["sentiment"] = sentiment
-    lignes = entrepot.requete(
-        cfg,
-        f"""
-        SELECT b.review_id, b.date_avis, b.note, b.texte, b.url_avis,
-               a.sentiment, a.score, a.resume, a.humeur, a.confiance,
-               ARRAY(SELECT AS STRUCT t.theme, t.polarite FROM UNNEST(a.themes) t) AS themes
-        FROM {cfg.table('avis_bruts')} b
-        LEFT JOIN (
-          SELECT * FROM {cfg.table('avis_analyses')}
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY review_id ORDER BY analyse_le DESC) = 1
-        ) a USING (review_id)
-        WHERE b.etablissement_id = @etab AND b.date_avis BETWEEN @debut AND @fin
-          AND b.texte IS NOT NULL {filtre}
-        ORDER BY b.date_avis DESC, b.publie_le DESC
-        LIMIT 200
-        """,
-        parametres,
-    )
+    # Source privilégiée : tables NLP déjà peuplées (humeur + confiance garanties).
+    if VERSION_AFFICHEE:
+        lignes = entrepot.requete(
+            cfg,
+            f"""
+            SELECT h.review_id, h.date_avis, h.note, h.texte,
+                   CAST(NULL AS STRING) AS url_avis,
+                   a.sentiment, a.score, CAST(NULL AS STRING) AS resume,
+                   a.humeur, a.confiance,
+                   ARRAY(SELECT AS STRUCT t.theme, t.polarite FROM UNNEST(a.themes) t) AS themes
+            FROM {cfg.table('avis_historique')} h
+            JOIN {cfg.table('analyses_maison')} a USING (review_id)
+            WHERE h.etablissement_id = @etab AND h.date_avis BETWEEN @debut AND @fin
+              AND h.texte IS NOT NULL {filtre}
+            ORDER BY h.date_avis DESC
+            LIMIT 200
+            """,
+            parametres,
+        )
+    else:
+        lignes = entrepot.requete(
+            cfg,
+            f"""
+            SELECT b.review_id, b.date_avis, b.note, b.texte, b.url_avis,
+                   a.sentiment, a.score, a.resume, a.humeur, a.confiance,
+                   ARRAY(SELECT AS STRUCT t.theme, t.polarite FROM UNNEST(a.themes) t) AS themes
+            FROM {cfg.table('avis_bruts')} b
+            LEFT JOIN (
+              SELECT * FROM {cfg.table('avis_analyses')}
+              QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY review_id
+                ORDER BY IF(STARTS_WITH(modele, 'maison-'), 0, 1), analyse_le DESC
+              ) = 1
+            ) a USING (review_id)
+            WHERE b.etablissement_id = @etab AND b.date_avis BETWEEN @debut AND @fin
+              AND b.texte IS NOT NULL {filtre}
+            ORDER BY b.date_avis DESC, b.publie_le DESC
+            LIMIT 200
+            """,
+            parametres,
+        )
     for ligne in lignes:
         ligne["themes"] = [{"theme": t["theme"], "libelle": taxonomie.libelle(t["theme"]),
                             "polarite": t["polarite"]} for t in ligne["themes"] or []]

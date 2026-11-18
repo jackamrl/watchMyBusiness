@@ -4,6 +4,10 @@ compte_facturation = "XXXXXX-XXXXXX-XXXXXX"
 budget_mensuel     = 5
 email_alertes      = "moi@exemple.fr"
 
+# NLP maison en production (données déjà dans BigQuery).
+moteur_analyse = "maison"
+version_modele = "fallafel-v3+fallafel-v4"
+
 etablissements = [
   {
     etablissement_id = "as-du-fallafel"

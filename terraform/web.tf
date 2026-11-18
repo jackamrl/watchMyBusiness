@@ -67,6 +67,18 @@ resource "google_cloud_run_v2_service" "web" {
         name  = "DATASET"
         value = google_bigquery_dataset.wmb.dataset_id
       }
+      env {
+        name  = "VERSION_MODELE"
+        value = var.version_modele
+      }
+      env {
+        name  = "MOTEUR_ANALYSE"
+        value = var.moteur_analyse
+      }
+      env {
+        name  = "SEUIL_CONFIANCE"
+        value = "0.92"
+      }
 
       startup_probe {
         http_get {

@@ -103,7 +103,7 @@ variable "etablissements" {
 
 variable "moteur_analyse" {
   type        = string
-  default     = "gemini"
+  default     = "maison"
   description = "Analyse des avis : gemini (historique) ou maison (NLP fait main, relais Gemini si incertain)."
 
   validation {
@@ -114,8 +114,8 @@ variable "moteur_analyse" {
 
 variable "version_modele" {
   type        = string
-  default     = "nlp-v1"
-  description = "Version du paquet NLP maison, dossier gs://<projet>-modeles/<version>/."
+  default     = "fallafel-v3+fallafel-v4"
+  description = "Version du NLP maison (rapports / analyses en BigQuery, dossier gs://<projet>-modeles/<version>/)."
 }
 
 variable "gemini_par_cle" {
