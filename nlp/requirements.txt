@@ -1,0 +1,6 @@
+# Entraînement local (RTX 3070 Ti) : installer d'abord PyTorch avec CUDA, par ex.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# puis :
+-r ../app/requirements.txt
+numpy==2.5.4
+datasets==3.6.0  # facultatif : Allociné et Wikipédia FR (commande corpus)

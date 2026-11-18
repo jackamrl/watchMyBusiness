@@ -100,3 +100,26 @@ variable "etablissements" {
     error_message = "url_maps doit contenir l'identifiant de lieu (!1s0x…:0x…). Suivez la redirection du lien maps.app.goo.gl."
   }
 }
+
+variable "moteur_analyse" {
+  type        = string
+  default     = "gemini"
+  description = "Analyse des avis : gemini (historique) ou maison (NLP fait main, relais Gemini si incertain)."
+
+  validation {
+    condition     = contains(["gemini", "maison"], var.moteur_analyse)
+    error_message = "moteur_analyse doit valoir gemini ou maison."
+  }
+}
+
+variable "version_modele" {
+  type        = string
+  default     = "nlp-v1"
+  description = "Version du paquet NLP maison, dossier gs://<projet>-modeles/<version>/."
+}
+
+variable "gemini_par_cle" {
+  type        = bool
+  default     = false
+  description = "true : Gemini via l'API publique et la clé du secret gemini-api-key (sans Vertex AI)."
+}
