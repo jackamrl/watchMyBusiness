@@ -1,0 +1,6 @@
+{
+  "name": "WatchMyBusiness",
+  "description": "Tableau de bord de satisfaction client : avis Google Maps et TripAdvisor analysés par notre propre modèle NLP, avec l'assistant Watchy.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

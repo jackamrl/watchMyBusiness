@@ -26,3 +26,6 @@ Thumbs.db
 .idea/
 .qodo/
 *.swp
+
+# Données de démo du frontend (avis publics classés par notre modèle, sans auteur)
+!frontend/src/data/
