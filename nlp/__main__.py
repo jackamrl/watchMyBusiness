@@ -135,6 +135,8 @@ def main() -> int:
     c.add_argument("--dry-run", action="store_true")
     c.add_argument("--sans-sync", action="store_true",
                    help="ne pas tenter de copier humeur/confiance vers avis_analyses")
+    c.add_argument("--sans-gemini", action="store_true",
+                   help="ne pas publier aussi les rapports Gemini (version v1)")
 
     c = sous.add_parser("echantillon", help="sous-ensemble aléatoire d'un JSON Lines")
     c.add_argument("entree")
@@ -273,7 +275,8 @@ def main() -> int:
               else construire(a.avis, a.paquet, a.sortie))
     elif a.commande == "publier-cloud":
         from .publier_cloud import executer
-        print(json.dumps(executer(a.semaines, a.version, a.dry_run, a.sans_sync),
+        print(json.dumps(executer(a.semaines, a.version, a.dry_run, a.sans_sync,
+                                  aussi_gemini=not a.sans_gemini),
                          ensure_ascii=False, indent=1))
     elif a.commande == "echantillon":
         from .donnees import echantillon

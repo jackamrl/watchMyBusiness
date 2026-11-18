@@ -34,7 +34,15 @@ DUREE_CACHE_S = 300
 SENTIMENTS = {"POSITIF", "NEGATIF", "NEUTRE", "MIXTE"}
 SEUIL = float(os.environ.get("SEUIL_CONFIANCE", "0.92"))  # sous ce seuil : « à vérifier »
 # Version d'analyses à privilégier dans le tableau de bord (ex. fallafel-v3+fallafel-v4).
-VERSION_AFFICHEE = os.environ.get("VERSION_MODELE", "").strip()
+VERSION_MAISON = os.environ.get("VERSION_MODELE", "fallafel-v3+fallafel-v4").strip()
+VERSION_GEMINI = "v1"
+
+
+def version_pour(moteur: str | None) -> str:
+    """maison → NLP fait main ; gemini → analyses Gemini (version_prompt=v1)."""
+    if (moteur or "maison").lower() == "gemini":
+        return VERSION_GEMINI
+    return VERSION_MAISON or VERSION_GEMINI
 
 _cache: dict[str, tuple[float, Any]] = {}
 _verrou = threading.Lock()
@@ -67,18 +75,18 @@ def etablissements(cfg) -> list[dict]:
     )
 
 
-def liste_rapports(cfg, etab: str, limite: int) -> list[dict]:
-    filtre_version = "AND version_prompt = @version" if VERSION_AFFICHEE else ""
-    parametres: dict[str, Any] = {"etab": etab, "limite": limite}
-    if VERSION_AFFICHEE:
-        parametres["version"] = VERSION_AFFICHEE
+def liste_rapports(cfg, etab: str, limite: int, moteur: str | None = None) -> list[dict]:
+    version = version_pour(moteur)
+    parametres: dict[str, Any] = {"etab": etab, "limite": limite, "version": version}
     lignes = entrepot.requete(
         cfg,
         f"""
         SELECT semaine_id, periode_debut, periode_fin, nb_avis, nb_analyses,
-               note_moyenne, pct_positif, pct_negatif, pct_neutre, pct_mixte, tendance
+               note_moyenne, pct_positif, pct_negatif, pct_neutre, pct_mixte, tendance,
+               modele, version_prompt
         FROM {cfg.table('rapports_hebdo')}
-        WHERE etablissement_id = @etab {filtre_version}
+        WHERE etablissement_id = @etab AND version_prompt = @version
+          AND IFNULL(nb_avis, 0) > 0
         ORDER BY periode_debut DESC
         LIMIT @limite
         """,
@@ -87,12 +95,14 @@ def liste_rapports(cfg, etab: str, limite: int) -> list[dict]:
     return [serialisable(l) for l in lignes]
 
 
-def detail_rapport(cfg, etab: str, semaine_id: str) -> dict | None:
+def detail_rapport(cfg, etab: str, semaine_id: str, moteur: str | None = None) -> dict | None:
+    version = version_pour(moteur)
     lignes = entrepot.requete(
         cfg,
         f"SELECT * FROM {cfg.table('rapports_hebdo')} "
-        "WHERE etablissement_id = @etab AND semaine_id = @semaine",
-        {"etab": etab, "semaine": semaine_id},
+        "WHERE etablissement_id = @etab AND semaine_id = @semaine "
+        "AND version_prompt = @version",
+        {"etab": etab, "semaine": semaine_id, "version": version},
     )
     if not lignes:
         return None
@@ -102,8 +112,8 @@ def detail_rapport(cfg, etab: str, semaine_id: str) -> dict | None:
     precedent = entrepot.requete(
         cfg,
         f"SELECT semaine_id, pct_positif, note_moyenne FROM {cfg.table('rapports_hebdo')} "
-        "WHERE etablissement_id = @etab AND periode_debut = @debut",
-        {"etab": etab, "debut": debut - timedelta(days=7)},
+        "WHERE etablissement_id = @etab AND periode_debut = @debut AND version_prompt = @version",
+        {"etab": etab, "debut": debut - timedelta(days=7), "version": version},
     )
     r["comparaison_semaine_precedente"] = (
         {
@@ -114,9 +124,8 @@ def detail_rapport(cfg, etab: str, semaine_id: str) -> dict | None:
         else None
     )
 
-    table_volume = (
-        cfg.table("avis_historique") if VERSION_AFFICHEE else cfg.table("avis_bruts")
-    )
+    est_maison = version != VERSION_GEMINI
+    table_volume = cfg.table("avis_historique") if est_maison else cfg.table("avis_bruts")
     par_jour = {
         (l["date_avis"].isoformat() if hasattr(l["date_avis"], "isoformat") else str(l["date_avis"])): l["nb"]
         for l in entrepot.requete(
@@ -134,25 +143,22 @@ def detail_rapport(cfg, etab: str, semaine_id: str) -> dict | None:
         for i in range((fin - debut).days + 1)
     ]
 
-    version = r.get("version_prompt") or VERSION_AFFICHEE or "v1"
+    version = r.get("version_prompt") or version
     p = {"etab": etab, "version": version, "debut": debut, "fin": fin}
-    # Analyses NLP maison : table dédiée (humeur/confiance déjà présentes).
-    table_a = cfg.table("analyses_maison") if (
-        VERSION_AFFICHEE or str(r.get("modele", "")).startswith("maison-")
-    ) else cfg.table("avis_analyses")
+    est_maison = version != VERSION_GEMINI
+    table_a = cfg.table("analyses_maison") if est_maison else cfg.table("avis_analyses")
+    table_h = cfg.table("avis_historique") if est_maison else cfg.table("avis_bruts")
     filtre = "a.etablissement_id = @etab AND a.date_avis BETWEEN @debut AND @fin"
-    if "analyses_maison" not in table_a:
+    if not est_maison:
         filtre += " AND a.version_prompt = @version"
 
     citations: dict[tuple[str, str], list[dict]] = {}
-    # Pas d'extraits stockés côté maison : on cite le début du texte de l'avis.
     for l in entrepot.requete(
         cfg,
         f"""
         SELECT t.theme, t.polarite, LEFT(h.texte, 160) AS extrait, a.score
         FROM {table_a} a
-        JOIN {cfg.table('avis_historique' if 'analyses_maison' in table_a else 'avis_bruts')} h
-          USING (review_id)
+        JOIN {table_h} h USING (review_id)
         , UNNEST(a.themes) t
         WHERE {filtre} AND h.texte IS NOT NULL AND t.polarite != 'absent'
         QUALIFY ROW_NUMBER() OVER (
@@ -188,13 +194,14 @@ def detail_rapport(cfg, etab: str, semaine_id: str) -> dict | None:
     return r
 
 
-def liste_avis(cfg, etab: str, debut: date, fin: date, sentiment: str | None) -> list[dict]:
+def liste_avis(cfg, etab: str, debut: date, fin: date, sentiment: str | None,
+               moteur: str | None = None) -> list[dict]:
     filtre = "AND a.sentiment = @sentiment" if sentiment else ""
     parametres: dict[str, Any] = {"etab": etab, "debut": debut, "fin": fin}
     if sentiment:
         parametres["sentiment"] = sentiment
-    # Source privilégiée : tables NLP déjà peuplées (humeur + confiance garanties).
-    if VERSION_AFFICHEE:
+    version = version_pour(moteur)
+    if version != VERSION_GEMINI:
         lignes = entrepot.requete(
             cfg,
             f"""
@@ -213,6 +220,7 @@ def liste_avis(cfg, etab: str, debut: date, fin: date, sentiment: str | None) ->
             parametres,
         )
     else:
+        parametres["version"] = version
         lignes = entrepot.requete(
             cfg,
             f"""
@@ -220,13 +228,8 @@ def liste_avis(cfg, etab: str, debut: date, fin: date, sentiment: str | None) ->
                    a.sentiment, a.score, a.resume, a.humeur, a.confiance,
                    ARRAY(SELECT AS STRUCT t.theme, t.polarite FROM UNNEST(a.themes) t) AS themes
             FROM {cfg.table('avis_bruts')} b
-            LEFT JOIN (
-              SELECT * FROM {cfg.table('avis_analyses')}
-              QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY review_id
-                ORDER BY IF(STARTS_WITH(modele, 'maison-'), 0, 1), analyse_le DESC
-              ) = 1
-            ) a USING (review_id)
+            JOIN {cfg.table('avis_analyses')} a
+              ON a.review_id = b.review_id AND a.version_prompt = @version
             WHERE b.etablissement_id = @etab AND b.date_avis BETWEEN @debut AND @fin
               AND b.texte IS NOT NULL {filtre}
             ORDER BY b.date_avis DESC, b.publie_le DESC
@@ -307,29 +310,30 @@ def creer_application():
         cfg = configuration.charger()
         source = SimpleNamespace(
             etablissements=lambda: etablissements(cfg),
-            liste_rapports=lambda e, n: liste_rapports(cfg, e, n),
-            detail_rapport=lambda e, s: detail_rapport(cfg, e, s),
-            liste_avis=lambda e, d, f, s, v=False: [
-                a for a in liste_avis(cfg, e, d, f, s) if not v or a["a_verifier"]])
+            liste_rapports=lambda e, n, m=None: liste_rapports(cfg, e, n, m),
+            detail_rapport=lambda e, s, m=None: detail_rapport(cfg, e, s, m),
+            liste_avis=lambda e, d, f, s, v=False, m=None: [
+                a for a in liste_avis(cfg, e, d, f, s, m) if not v or a["a_verifier"]])
 
     @app.get("/api/etablissements")
     def route_etablissements():
         return {"etablissements": _memoriser("etab", source.etablissements)}
 
     @app.get("/api/rapports")
-    def route_rapports(etablissement: str, limite: int = Query(12, ge=1, le=52)):
+    def route_rapports(etablissement: str, limite: int = Query(12, ge=1, le=52),
+                       moteur: str = Query("maison")):
         return {
             "rapports": _memoriser(
-                f"liste:{etablissement}:{limite}",
-                lambda: source.liste_rapports(etablissement, limite),
+                f"liste:{etablissement}:{limite}:{moteur}",
+                lambda: source.liste_rapports(etablissement, limite, moteur),
             )
         }
 
     @app.get("/api/rapports/{semaine_id}")
-    def route_rapport(semaine_id: str, etablissement: str):
+    def route_rapport(semaine_id: str, etablissement: str, moteur: str = Query("maison")):
         r = _memoriser(
-            f"detail:{etablissement}:{semaine_id}",
-            lambda: source.detail_rapport(etablissement, semaine_id),
+            f"detail:{etablissement}:{semaine_id}:{moteur}",
+            lambda: source.detail_rapport(etablissement, semaine_id, moteur),
         )
         if r is None:
             raise HTTPException(404, f"rapport {semaine_id} introuvable")
@@ -337,14 +341,14 @@ def creer_application():
 
     @app.get("/api/avis")
     def route_avis(etablissement: str, debut: date, fin: date, sentiment: str | None = None,
-                   a_verifier: bool = False):
+                   a_verifier: bool = False, moteur: str = Query("maison")):
         if sentiment and sentiment not in SENTIMENTS:
             raise HTTPException(400, f"sentiment inconnu : {sentiment}")
         if (fin - debut).days > 62:
             raise HTTPException(400, "période limitée à 62 jours")
         avis = _memoriser(
-            f"avis:{etablissement}:{debut}:{fin}:{sentiment}:{a_verifier}",
-            lambda: source.liste_avis(etablissement, debut, fin, sentiment, a_verifier),
+            f"avis:{etablissement}:{debut}:{fin}:{sentiment}:{a_verifier}:{moteur}",
+            lambda: source.liste_avis(etablissement, debut, fin, sentiment, a_verifier, moteur),
         )
         return {"nb": len(avis), "avis": avis}
 

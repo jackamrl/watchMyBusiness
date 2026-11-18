@@ -169,8 +169,28 @@ def publier_rapports(
     avis = _charger_avis(cfg, version)
     rapports = _rapports_depuis_avis(avis, etablissement_id, version, modele, nb_semaines, seuil)
     if dry_run:
-        return {"avis": len(avis), "rapports": len(rapports), "semaines": [r["semaine_id"] for r in rapports]}
+        return {"avis": len(avis), "rapports": len(rapports),
+                "semaines": [r["semaine_id"] for r in rapports[-5:]]}
+    return {"avis": len(avis), **_ecrire_rapports(cfg, rapports)}
 
+
+def _charger_avis_gemini(cfg) -> list[dict]:
+    return entrepot.requete(
+        cfg,
+        f"""
+        SELECT
+          b.review_id, b.etablissement_id, b.date_avis, b.note, b.texte,
+          a.sentiment, a.score, a.humeur, a.confiance, a.themes, a.modele
+        FROM {cfg.table('avis_bruts')} b
+        JOIN {cfg.table('avis_analyses')} a
+          ON a.review_id = b.review_id AND a.version_prompt = 'v1'
+        WHERE b.texte IS NOT NULL
+        ORDER BY b.date_avis
+        """,
+    )
+
+
+def _ecrire_rapports(cfg, rapports: list[dict]) -> dict:
     lignes = []
     for r in rapports:
         lignes.append({
@@ -194,22 +214,20 @@ def publier_rapports(
             "tendance": r["tendance"],
             "top_negatifs": json.dumps(
                 [{k: t[k] for k in ("theme", "polarite", "occurrences", "part") if k in t}
-                 for t in r["top_negatifs"]],
-                ensure_ascii=False,
-            ),
+                 for t in r["top_negatifs"]], ensure_ascii=False),
             "top_positifs": json.dumps(
                 [{k: t[k] for k in ("theme", "polarite", "occurrences", "part") if k in t}
-                 for t in r["top_positifs"]],
-                ensure_ascii=False,
-            ),
+                 for t in r["top_positifs"]], ensure_ascii=False),
             "synthese": r["synthese"],
             "modele": r["modele"],
             "version_prompt": r["version_prompt"],
             "genere_le": datetime.now(timezone.utc).isoformat(),
             "statut_email": "non_envoye",
         })
-    ecrits = entrepot.fusionner(cfg, "rapports_hebdo", lignes, ("etablissement_id", "semaine_id"))
-    return {"avis": len(avis), "rapports": len(rapports), "ecrits": ecrits,
+    ecrits = entrepot.fusionner(
+        cfg, "rapports_hebdo", lignes, ("etablissement_id", "semaine_id", "version_prompt")
+    )
+    return {"rapports": len(rapports), "ecrits": ecrits,
             "semaines": [r["semaine_id"] for r in rapports[-5:]]}
 
 
@@ -218,6 +236,7 @@ def executer(
     version: str = VERSION_DEFAUT,
     dry_run: bool = False,
     sans_sync: bool = False,
+    aussi_gemini: bool = True,
 ) -> dict:
     os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "watch-my-business-512316")
     cfg = configuration.charger()
@@ -228,5 +247,39 @@ def executer(
         except Exception as erreur:
             journal.warning("sync humeur/confiance impossible (schéma pas encore à jour ?) : %s", erreur)
             bilan["sync_erreur"] = str(erreur)
-    bilan.update(publier_rapports(cfg, version=version, nb_semaines=semaines, dry_run=dry_run))
+    avis = _charger_avis(cfg, version)
+    rapports = _rapports_depuis_avis(
+        avis, "as-du-fallafel", version, MODELE_DEFAUT, semaines, SEUIL_DEFAUT
+    )
+    if dry_run:
+        bilan.update({"avis": len(avis), "rapports": len(rapports),
+                      "semaines": [r["semaine_id"] for r in rapports[-5:]]})
+    else:
+        bilan.update({"avis": len(avis), **_ecrire_rapports(cfg, rapports)})
+    if aussi_gemini:
+        try:
+            if dry_run:
+                avis_g = _charger_avis_gemini(cfg)
+                for a in avis_g:
+                    if a.get("confiance") is None:
+                        a["confiance"] = abs(float(a["score"])) if a.get("score") is not None else 0.8
+                r_g = _rapports_depuis_avis(
+                    avis_g, "as-du-fallafel", "v1", "gemini-3.5-flash", semaines, SEUIL_DEFAUT
+                )
+                bilan["gemini"] = {"avis": len(avis_g), "rapports": len(r_g),
+                                   "semaines": [r["semaine_id"] for r in r_g[-5:]]}
+            else:
+                avis_g = _charger_avis_gemini(cfg)
+                for a in avis_g:
+                    if a.get("confiance") is None:
+                        a["confiance"] = abs(float(a["score"])) if a.get("score") is not None else 0.8
+                    a["a_verifier"] = False
+                r_g = _rapports_depuis_avis(
+                    avis_g, "as-du-fallafel", "v1", "gemini-3.5-flash", semaines, SEUIL_DEFAUT
+                )
+                bilan["gemini"] = _ecrire_rapports(cfg, r_g)
+                bilan["gemini"]["avis"] = len(avis_g)
+        except Exception as erreur:
+            journal.warning("rapports Gemini non publiés : %s", erreur)
+            bilan["gemini_erreur"] = str(erreur)
     return bilan
