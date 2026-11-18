@@ -54,7 +54,7 @@ resource "google_bigquery_table" "avis_analyses" {
   dataset_id          = google_bigquery_dataset.wmb.dataset_id
   table_id            = "avis_analyses"
   deletion_protection = true
-  description         = "Sortie structurée Gemini. Clé : (review_id, version_prompt)."
+  description         = "Analyse de chaque avis (NLP maison ou Gemini). Clé : (review_id, version_prompt)."
 
   time_partitioning {
     type  = "DAY"
@@ -83,6 +83,9 @@ resource "google_bigquery_table" "avis_analyses" {
     { name = "modele", type = "STRING", mode = "REQUIRED" },
     { name = "version_prompt", type = "STRING", mode = "REQUIRED" },
     { name = "analyse_le", type = "TIMESTAMP", mode = "REQUIRED" },
+    # Humeur (NLP maison ou relais Gemini) et confiance du modèle maison (null pour Gemini).
+    { name = "humeur", type = "STRING" },
+    { name = "confiance", type = "FLOAT64" },
   ])
 }
 
@@ -147,7 +150,7 @@ resource "google_bigquery_table" "v_avis" {
         b.date_avis, DATE_TRUNC(b.date_avis, ISOWEEK) AS semaine,
         b.note, b.texte, b.langue, b.url_avis,
         a.sentiment, a.score, a.resume, a.actionnable, a.theme_emergent,
-        a.modele, a.version_prompt,
+        a.modele, a.version_prompt, a.humeur, a.confiance,
         ARRAY_LENGTH(a.themes) AS nb_themes
       FROM `${local.ds}.avis_bruts` b
       JOIN `${local.ds}.etablissements` e USING (etablissement_id)

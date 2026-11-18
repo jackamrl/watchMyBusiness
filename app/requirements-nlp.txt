@@ -1,0 +1,3 @@
+# NLP maison en production : PyTorch version CPU (pas de CUDA dans Cloud Run).
+# Installé avec --index-url https://download.pytorch.org/whl/cpu (voir Dockerfile).
+torch==2.15.0

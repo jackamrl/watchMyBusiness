@@ -10,6 +10,10 @@ output "depot_brut" {
   value = "gs://${google_storage_bucket.brut.name}"
 }
 
+output "depot_modeles" {
+  value = "gs://${google_storage_bucket.modeles.name}"
+}
+
 output "jobs" {
   value = { for cle, job in google_cloud_run_v2_job.jobs : cle => job.name }
 }

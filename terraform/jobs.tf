@@ -20,7 +20,7 @@ locals {
   # Un seul conteneur, trois jobs : seule la commande change.
   jobs = {
     collecte = { args = ["collecte"], timeout = "1800s", memoire = "512Mi" }
-    analyse  = { args = ["analyse"], timeout = "1800s", memoire = "1Gi" }
+    analyse  = { args = ["analyse"], timeout = "1800s", memoire = "2Gi" }
     rapport  = { args = ["rapport"], timeout = "900s", memoire = "512Mi" }
   }
 
@@ -36,6 +36,10 @@ locals {
     SMTP_PORT            = tostring(var.smtp.port)
     SMTP_UTILISATEUR     = var.smtp.utilisateur
     EMAIL_EXPEDITEUR     = var.smtp.expediteur
+    MOTEUR_ANALYSE       = var.moteur_analyse
+    MODELE_MAISON        = "gs://${google_storage_bucket.modeles.name}/${var.version_modele}/"
+    VERSION_MODELE       = var.version_modele
+    SECRET_GEMINI        = var.gemini_par_cle ? "gemini-api-key" : ""
   }
 }
 

@@ -45,3 +45,27 @@ resource "google_storage_bucket_iam_member" "pipeline" {
   role     = each.value
   member   = google_service_account.pipeline.member
 }
+
+# Paquets du NLP maison (tokenizer.json + modele.pt), un dossier par version :
+#   gcloud storage cp modeles/nlp-v1-S/* gs://<projet>-modeles/nlp-v1/
+resource "google_storage_bucket" "modeles" {
+  name                        = "${var.projet}-modeles"
+  location                    = var.region
+  storage_class               = "STANDARD"
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = false
+
+  versioning {
+    enabled = true
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# Le pipeline lit les modèles ; il ne peut ni les modifier ni les supprimer.
+resource "google_storage_bucket_iam_member" "pipeline_modeles" {
+  bucket = google_storage_bucket.modeles.name
+  role   = "roles/storage.objectViewer"
+  member = google_service_account.pipeline.member
+}

@@ -12,116 +12,158 @@
 </head>
 <body>
 
-<div id="application">
-
-  <header class="entete">
+<header class="entete">
+  <div class="entete-interieur">
     <div class="marque">
-      <span class="pastille"></span>
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 4C6.5 4 2.7 8.3 1.5 12c1.2 3.7 5 8 10.5 8s9.3-4.3 10.5-8C21.3 8.3 17.5 4 12 4zm0 13a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-7.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>
+      </span>
       <div>
         <strong>WatchMyBusiness</strong>
-        <small id="sous-marque">Rapport hebdomadaire de satisfaction</small>
+        <small id="sous-marque">Satisfaction client, semaine après semaine</small>
       </div>
     </div>
     <div class="actions-entete">
+      <span class="moteur" title="Chaque avis est classé par notre propre modèle NLP">
+        <span class="point"></span><span id="moteur-libelle">NLP maison</span>
+      </span>
       <select id="selecteur-etablissement" aria-label="Choisir un établissement"></select>
       <select id="selecteur-semaine" aria-label="Choisir une semaine"></select>
     </div>
-  </header>
+  </div>
+</header>
 
-  <main class="contenu">
+<main class="contenu">
 
-    <div id="bandeau-vide" class="bandeau masque">
-      Aucun rapport disponible pour le moment. Le rapport est généré chaque lundi à 08:00.
+  <div id="bandeau-vide" class="bandeau masque">
+    Aucun rapport disponible pour le moment. Le rapport est généré chaque lundi à 08:00.
+  </div>
+
+  <section class="resume">
+    <div>
+      <p class="surtitre" id="nom-etablissement">—</p>
+      <h1 id="titre-semaine">—</h1>
+      <p id="sous-titre-semaine" class="aide"></p>
     </div>
+    <div class="bloc-tendance">
+      <span id="badge-tendance" class="badge">—</span>
+      <span id="comparaison" class="aide"></span>
+    </div>
+  </section>
 
-    <section class="resume">
-      <div>
-        <h1 id="titre-semaine">—</h1>
-        <p id="sous-titre-semaine" class="aide"></p>
-      </div>
-      <div class="bloc-tendance">
-        <span id="badge-tendance" class="badge">—</span>
-        <span id="comparaison" class="aide"></span>
-      </div>
-    </section>
+  <section class="grille-indicateurs">
+    <article class="indicateur">
+      <span class="libelle">Avis reçus</span>
+      <strong id="kpi-total">—</strong>
+      <span id="kpi-total-detail" class="aide"></span>
+    </article>
+    <article class="indicateur positif">
+      <span class="libelle">Positifs</span>
+      <strong id="kpi-positif">—</strong>
+      <span id="kpi-positif-detail" class="aide"></span>
+    </article>
+    <article class="indicateur negatif">
+      <span class="libelle">Négatifs</span>
+      <strong id="kpi-negatif">—</strong>
+      <span id="kpi-negatif-detail" class="aide"></span>
+    </article>
+    <article class="indicateur mitige">
+      <span class="libelle">Mitigés et neutres</span>
+      <strong id="kpi-neutre">—</strong>
+      <span id="kpi-neutre-detail" class="aide"></span>
+    </article>
+    <button class="indicateur verifier" id="kpi-verifier-bouton" type="button"
+            title="Afficher les avis sur lesquels le modèle hésite">
+      <span class="libelle">À vérifier</span>
+      <strong id="kpi-verifier">—</strong>
+      <span class="aide">le modèle hésite · voir les avis →</span>
+    </button>
+  </section>
 
-    <section class="grille-indicateurs">
-      <article class="indicateur">
-        <span class="libelle">Avis reçus</span>
-        <strong id="kpi-total">—</strong>
-        <span id="kpi-total-detail" class="aide"></span>
-      </article>
-      <article class="indicateur positif">
-        <span class="libelle">Positifs</span>
-        <strong id="kpi-positif">—</strong>
-        <span id="kpi-positif-detail" class="aide"></span>
-      </article>
-      <article class="indicateur negatif">
-        <span class="libelle">Négatifs</span>
-        <strong id="kpi-negatif">—</strong>
-        <span id="kpi-negatif-detail" class="aide"></span>
-      </article>
-      <article class="indicateur neutre">
-        <span class="libelle">Neutres et mitigés</span>
-        <strong id="kpi-neutre">—</strong>
-        <span id="kpi-neutre-detail" class="aide"></span>
-      </article>
-    </section>
-
-    <section class="carte synthese">
+  <section class="grille-deux">
+    <article class="carte synthese">
       <div class="entete-carte">
         <h2>Synthèse de la semaine</h2>
-        <p id="synthese-source" class="aide"></p>
+        <span id="synthese-source" class="aide"></span>
       </div>
       <div id="synthese" class="synthese-corps"></div>
-    </section>
-
-    <section class="grille-graphiques">
-      <article class="carte">
-        <h2>Répartition des sentiments</h2>
-        <div class="zone-graphique"><canvas id="graphique-repartition"></canvas></div>
-      </article>
-      <article class="carte">
-        <h2>Volume d'avis par jour</h2>
-        <div class="zone-graphique"><canvas id="graphique-volume"></canvas></div>
-      </article>
-      <article class="carte large">
-        <h2>Évolution semaine après semaine</h2>
-        <div class="zone-graphique"><canvas id="graphique-evolution"></canvas></div>
-      </article>
-    </section>
-
-    <section class="grille-themes">
-      <article class="carte">
-        <h2><span class="puce rouge"></span>Ce qui a posé problème</h2>
-        <div id="themes-negatifs" class="liste-themes"></div>
-      </article>
-      <article class="carte">
-        <h2><span class="puce verte"></span>Ce qui a bien fonctionné</h2>
-        <div id="themes-positifs" class="liste-themes"></div>
-      </article>
-    </section>
-
-    <section class="carte">
+    </article>
+    <article class="carte">
       <div class="entete-carte">
-        <h2>Avis de la période</h2>
-        <div class="filtres" id="filtres-sentiment">
-          <button class="filtre actif" data-sentiment="">Tous</button>
-          <button class="filtre" data-sentiment="POSITIF">Positifs</button>
-          <button class="filtre" data-sentiment="NEGATIF">Négatifs</button>
-          <button class="filtre" data-sentiment="NEUTRE">Neutres</button>
-          <button class="filtre" data-sentiment="MIXTE">Mitigés</button>
-        </div>
+        <h2>Humeur des clients</h2>
+        <span class="aide">détectée par le modèle</span>
       </div>
-      <div id="liste-avis" class="liste-avis"></div>
-    </section>
+      <div id="humeurs" class="humeurs"></div>
+    </article>
+  </section>
 
-    <footer class="pied">
-      Apify · Cloud Storage · BigQuery · Gemini (Agent Platform) · Cloud Run ·
-      Workflows · Cloud Scheduler · Terraform
-    </footer>
-  </main>
-</div>
+  <section class="grille-graphiques">
+    <article class="carte">
+      <h2>Répartition des sentiments</h2>
+      <div class="zone-graphique"><canvas id="graphique-repartition"
+           aria-label="Répartition des sentiments de la semaine"></canvas></div>
+    </article>
+    <article class="carte">
+      <h2>Volume d'avis par jour</h2>
+      <div class="zone-graphique"><canvas id="graphique-volume"
+           aria-label="Nombre d'avis par jour"></canvas></div>
+    </article>
+  </section>
+
+  <section class="carte">
+    <div class="entete-carte">
+      <h2>Évolution semaine après semaine</h2>
+      <span class="aide">part d'avis positifs et négatifs, et note moyenne</span>
+    </div>
+    <div class="zone-graphique haute"><canvas id="graphique-evolution"
+         aria-label="Évolution hebdomadaire"></canvas></div>
+  </section>
+
+  <section class="carte">
+    <div class="entete-carte">
+      <h2>Thèmes : ce qui plaît, ce qui coince</h2>
+      <div class="legende">
+        <span><i class="carre negatif"></i>négatif</span>
+        <span><i class="carre neutre"></i>neutre</span>
+        <span><i class="carre positif"></i>positif</span>
+      </div>
+    </div>
+    <div id="matrice-themes" class="matrice"></div>
+  </section>
+
+  <section class="grille-themes">
+    <article class="carte">
+      <h2><span class="puce rouge"></span>Ce qui a posé problème</h2>
+      <div id="themes-negatifs" class="liste-themes"></div>
+    </article>
+    <article class="carte">
+      <h2><span class="puce verte"></span>Ce qui a bien fonctionné</h2>
+      <div id="themes-positifs" class="liste-themes"></div>
+    </article>
+  </section>
+
+  <section class="carte" id="section-avis">
+    <div class="entete-carte avis-entete">
+      <h2>Avis de la semaine <span id="compte-avis" class="compte"></span></h2>
+      <input id="recherche-avis" type="search" placeholder="Rechercher un mot…"
+             aria-label="Rechercher dans les avis">
+    </div>
+    <div class="filtres" id="filtres-sentiment" role="tablist">
+      <button class="filtre actif" data-sentiment="">Tous</button>
+      <button class="filtre" data-sentiment="POSITIF">Positifs</button>
+      <button class="filtre" data-sentiment="NEGATIF">Négatifs</button>
+      <button class="filtre" data-sentiment="MIXTE">Mitigés</button>
+      <button class="filtre" data-sentiment="NEUTRE">Neutres</button>
+      <button class="filtre verifier" data-verifier="1">À vérifier</button>
+    </div>
+    <div id="liste-avis" class="liste-avis"></div>
+  </section>
+
+  <footer class="pied">
+    Chaque avis est analysé par <strong>notre modèle NLP</strong> (Transformer entraîné de zéro) ·
+    Apify · Cloud Storage · BigQuery · Cloud Run · Workflows · Cloud Scheduler · Terraform
+  </footer>
+</main>
 
 <script src="app.js"></script>
 </body>

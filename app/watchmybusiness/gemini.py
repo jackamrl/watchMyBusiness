@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 from . import taxonomie
+from .nlp.etiquettes import HUMEURS
 
 # À incrémenter dès que le prompt ou la taxonomie change : chaque analyse
 # stockée porte sa version, ce qui permet de réanalyser et de comparer.
@@ -17,9 +18,18 @@ VERSION_PROMPT = "v1"
 
 SENTIMENTS = ("POSITIF", "NEGATIF", "NEUTRE", "MIXTE")
 
+DEFINITIONS_HUMEURS = {
+    "joie": "enthousiasme, émerveillement, plaisir marqué",
+    "satisfaction": "content, sans excès d'émotion",
+    "deception": "attentes non tenues, regret",
+    "frustration": "agacement face à un obstacle (attente, erreur, oubli)",
+    "colere": "indignation, hostilité, sentiment d'injustice",
+    "neutre": "ton factuel, sans émotion marquée",
+}
 
-def schema(metier: str) -> dict:
-    return {
+
+def schema(metier: str, avec_humeur: bool = False) -> dict:
+    resultat = {
         "type": "OBJECT",
         "properties": {
             "sentiment": {"type": "STRING", "enum": list(SENTIMENTS)},
@@ -57,11 +67,15 @@ def schema(metier: str) -> dict:
         },
         "required": ["sentiment", "score", "themes", "actionnable", "resume"],
     }
+    if avec_humeur:  # étiquetage des données d'entraînement du modèle maison
+        resultat["properties"]["humeur"] = {"type": "STRING", "enum": list(HUMEURS)}
+        resultat["required"].append("humeur")
+    return resultat
 
 
-def consigne(metier: str, nom: str) -> str:
+def consigne(metier: str, nom: str, avec_humeur: bool = False) -> str:
     liste = "\n".join(f"- {cle} : {desc}" for cle, desc in taxonomie.themes(metier).items())
-    return f"""Tu analyses un avis client Google Maps de « {nom} » (métier : {metier}).
+    texte = f"""Tu analyses un avis client Google Maps de « {nom} » (métier : {metier}).
 Réponds uniquement selon le schéma JSON fourni.
 
 Règles :
@@ -75,16 +89,32 @@ Règles :
 
 Thèmes autorisés :
 {liste}"""
+    if avec_humeur:
+        humeurs = "\n".join(f"- {h} : {d}" for h, d in DEFINITIONS_HUMEURS.items())
+        texte += f"""
+
+humeur : l'émotion dominante du client, une seule valeur parmi :
+{humeurs}"""
+    return texte
 
 
-def client(projet: str, region: str):
+def client(projet: str, region: str, cle_api: str | None = None):
+    """Avec `cle_api` : API Gemini publique (sans Vertex AI). Sinon : Vertex AI par IAM."""
     from google import genai
 
+    if cle_api:
+        return genai.Client(api_key=cle_api)
     return genai.Client(vertexai=True, project=projet, location=region)
 
 
 def analyser(
-    client_genai: Any, modele: str, metier: str, nom: str, texte: str, note: int | None
+    client_genai: Any,
+    modele: str,
+    metier: str,
+    nom: str,
+    texte: str,
+    note: int | None,
+    avec_humeur: bool = False,
 ) -> dict:
     from google.genai import types
 
@@ -93,10 +123,10 @@ def analyser(
         model=modele,
         contents=contenu,
         config=types.GenerateContentConfig(
-            system_instruction=consigne(metier, nom),
+            system_instruction=consigne(metier, nom, avec_humeur),
             temperature=0,
             response_mime_type="application/json",
-            response_schema=schema(metier),
+            response_schema=schema(metier, avec_humeur),
         ),
     )
     return valider(json.loads(reponse.text), metier)
@@ -126,7 +156,7 @@ def valider(sortie: dict, metier: str) -> dict:
         )
 
     emergent = sortie.get("theme_emergent")
-    return {
+    resultat = {
         "sentiment": sentiment,
         "score": score,
         "themes": themes,
@@ -134,3 +164,6 @@ def valider(sortie: dict, metier: str) -> dict:
         "actionnable": bool(sortie.get("actionnable")),
         "resume": str(sortie.get("resume") or "")[:400],
     }
+    if sortie.get("humeur") in HUMEURS:
+        resultat["humeur"] = sortie["humeur"]
+    return resultat

@@ -12,6 +12,10 @@ terraform/terraform.tfvars
 *.tfplan
 deploiement.log
 
+# NLP maison : données et modèles (volumineux, régénérables)
+data/
+modeles/
+
 # Secrets
 .env
 *.pem

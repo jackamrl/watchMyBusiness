@@ -64,7 +64,7 @@ class Donnees:
             "etab": self.etab,
             "debut": self.debut - timedelta(weeks=decalage),
             "fin": self.fin - timedelta(weeks=decalage),
-            "version": gemini.VERSION_PROMPT,
+            "version": self.config.version_active(),
         }
 
     def kpi(self, decalage: int = 0) -> dict:
@@ -370,7 +370,7 @@ def executer(config: Config, date_fin: str | None = None, envoyer: bool = True) 
             "top_positifs": json.dumps(classement(themes, "positif"), ensure_ascii=False),
             "synthese": synthese,
             "modele": config.modele_gemini,
-            "version_prompt": gemini.VERSION_PROMPT,
+            "version_prompt": config.version_active(),
             "genere_le": datetime.now(UTC).isoformat(),
             "statut_email": "non_envoye",
         }
